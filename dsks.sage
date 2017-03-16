@@ -22,11 +22,16 @@ def is_primitive_root(g, p, factors):
 class RSAKeyPair:
 
     def __init__(self, bitsize):
-        p = random_prime(2^bitsize, lbound=2^(bitsize-1)) 
-        q = random_prime(2^bitsize, lbound=2^(bitsize-1)) 
-        self.N = p*q
-        self.e = 65537
-        self.d = inverse_mod(self.e, lcm(p-1, q-1))
+        bitsize = bitsize/2
+        for _ in range(100):
+            p = random_prime(2^bitsize, lbound=2^(bitsize-1)) 
+            q = random_prime(2^bitsize, lbound=2^(bitsize-1)) 
+            if len((p*q).bits()) == 2*bitsize:
+                self.N = p*q
+                self.e = 65537
+                self.d = inverse_mod(self.e, lcm(p-1, q-1))
+                return
+        raise TooManyAttemptsException("failed to generate a rsa modulus of exact bitsize")
 
     def sign(self, message):
         hai = hash_as_integer(message)
@@ -38,16 +43,20 @@ class RSAKeyPair:
         #no padding ftw again
         return pow(sig, self.e, self.N) == hai
 
-    def generate_bad_params(self, message, signature, max_subgroup_size=16, max_attempts=100):
+    def generate_bad_params(self, message, signature, max_subgroup_size=16, max_attempts=2000):
         all_primes = list(primes(2^max_subgroup_size))
         for _ in range(1,max_attempts):  # lets limit the number of times we try this
             shuffle(all_primes)
             try:
-                p, p_factors = self.generate_bad_params_helper(len(self.N.bits()), message, copy(all_primes), signature, max_subgroup_size, max_attempts)
+                p, p_factors, remaining_primes = self.generate_bad_params_helper(len(self.N.bits())/2, message, copy(all_primes), signature, max_subgroup_size, max_attempts)
                 if not is_primitive_root(message, p, p_factors) or not is_primitive_root(signature, p, p_factors):
                     continue
-                else:
-                    return p
+                q, q_factors, _ = self.generate_bad_params_helper(len(self.N.bits())/2, message, remaining_primes, signature, max_subgroup_size, max_attempts)
+                if not is_primitive_root(message, q, q_factors) or not is_primitive_root(signature, q, q_factors):
+                    continue
+                if not self.N < p*q:
+                    continue
+                return p,q
             except TooManyAttemptsException:
                 continue
         raise TooManyAttemptsException("failed to generate a malicious p and q")
@@ -69,7 +78,7 @@ class RSAKeyPair:
             if len(option.bits()) == bitsize and option.is_prime():
                 p_factors.append(c)
                 p = option
-                return p, p_factors
+                return p, p_factors, all_primes
             else:
                 all_primes.insert(0, c)
         raise TooManyAttemptsException("failed to generate a evil prime of correct bitsize")
@@ -90,8 +99,6 @@ class RSAKeyPair:
                 p = next_prime(p)
         return Factorization(factors.items())
 
-    #def generate_small_subgroup_prime(bitsize):
-        
 
 class ECDSAKeyPair:
 
