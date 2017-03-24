@@ -1,5 +1,4 @@
-import hashlib, binascii
-from collections import defaultdict
+import hashlib
 
 class TooManyAttemptsException(Exception):
     pass
@@ -29,21 +28,66 @@ class RSAKeyPair:
             if len((p*q).bits()) == 2*bitsize:
                 self.N = p*q
                 self.e = 65537
-                self.d = inverse_mod(self.e, lcm(p-1, q-1))
+                self.d = inverse_mod(self.e, (p-1)*(q-1))
                 return
         raise TooManyAttemptsException("failed to generate a rsa modulus of exact bitsize")
 
+    def sigpad(self, hash):
+        pre = b'\x00\x01'
+        pos = b'\x00' 
+        bytelen = len(self.N.bits())//8
+        hashlen = 20 #sha1 is 20 bytes
+        fs = b'\xff'*(bytelen-hashlen-3) # 3 = prefix 0x0001 + 0x00
+        padstr = pre + fs + pos + hash
+        assert len(padstr) == bytelen
+        return padstr
+
+    def sighash(self, message):
+        hash = hashlib.sha1(message).digest()
+        padd = self.sigpad(hash)
+        return int(padd.encode('hex'), 16)
+
     def sign(self, message):
-        hai = hash_as_integer(message)
-        #no padding ftw
-        return pow(hai, self.d, self.N)
+        sh = self.sighash(message)
+        hai = Mod(sh, self.N)
+        ret = Mod(hai, self.N)^self.d
+        return ret
 
     def verify(self, message, sig):
-        hai = hash_as_integer(message)
-        #no padding ftw again
-        return pow(sig, self.e, self.N) == hai
+        sh = self.sighash(message)
+        hai = Mod(sh, self.N)
+        ret = Mod(sig, self.N)^self.e
+        return ret == hai
 
-    def generate_bad_params(self, message, signature, max_subgroup_size=16, max_attempts=2000):
+    def create_valid_keypair(self, message, s):
+        hai = self.sighash(message)
+        p,q = self.generate_bad_params(hai, s)
+        n = p*q
+        assert n > self.N
+        smp = Mod(s, p) 
+        pmp = Mod(hai, p) 
+        ep = discrete_log(pmp, smp)
+        smq = Mod(s, q)
+        pmq = Mod(hai, q)
+        eq = discrete_log(pmq, smq)
+        eprime = CRT_list([ep, eq], [p-1, q-1])
+        assert ep == eprime%(p-1)
+        assert eq == eprime%(q-1)
+        new_pair = copy(self)
+        new_pair.N = n 
+        new_pair.e = eprime
+        dprime = inverse_mod(eprime, (p-1)*(q-1))
+        new_pair.d = dprime
+        assert Mod(1, (p-1)*(q-1)) == Mod(dprime*eprime, (p-1)*(q-1))
+        return new_pair
+
+
+    def generate_bad_params(self, message, signature, max_subgroup_size=16, max_attempts=5000):
+        """
+        generate_bad_params generates two prime numbers which have many small
+        order subgroups (as well as some other constraints that allow for RSA DSKS
+        attacks)
+        """
         all_primes = list(primes(2^max_subgroup_size))
         for _ in range(1,max_attempts):  # lets limit the number of times we try this
             shuffle(all_primes)
@@ -51,18 +95,21 @@ class RSAKeyPair:
                 p, p_factors, remaining_primes = self.generate_bad_params_helper(len(self.N.bits())/2, message, copy(all_primes), signature, max_subgroup_size, max_attempts)
                 if not is_primitive_root(message, p, p_factors) or not is_primitive_root(signature, p, p_factors):
                     continue
+                assert p-1 == reduce(lambda x,y: x*y, p_factors)
                 q, q_factors, _ = self.generate_bad_params_helper(len(self.N.bits())/2, message, remaining_primes, signature, max_subgroup_size, max_attempts)
                 if not is_primitive_root(message, q, q_factors) or not is_primitive_root(signature, q, q_factors):
                     continue
-                if not self.N < p*q:
+                assert q-1 == reduce(lambda x,y: x*y, q_factors)
+                if self.N > p*q:
                     continue
+                assert gcd(p-1,q-1) == 2
                 return p,q
             except TooManyAttemptsException:
                 continue
         raise TooManyAttemptsException("failed to generate a malicious p and q")
         
     def generate_bad_params_helper(self, bitsize, padded_message, all_primes, signature, max_subgroup_size=16, max_attempts=100):
-        p_factors = []
+        p_factors = [2]
         p = 2
 
         # multiply random small primes until we cross a threshold
@@ -82,22 +129,6 @@ class RSAKeyPair:
             else:
                 all_primes.insert(0, c)
         raise TooManyAttemptsException("failed to generate a evil prime of correct bitsize")
-
-
-    def small_factors(num, bound=2^20):
-        """
-        small_factors returns a Factorization of num of all primes smaller than
-        bound.
-        """
-        factors = defaultdict(int)
-        p = 2
-        while num > 1 and p < bound:
-            if num % p == 0: 
-                factors[p] += 1
-                num /= p
-            else:
-                p = next_prime(p)
-        return Factorization(factors.items())
 
 
 class ECDSAKeyPair:
@@ -176,13 +207,15 @@ def test():
         assert kp.verify("allo", r,s)
         assert not kp.verify("hello", r,s)
         kpp = kp.create_valid_keypair("allo", r,s) 
-        assert kpp.verify("allo", r,s)
+        assert kpp.verify("allo", r, s)
 
-        #test rsa
-        rkp = RSAKeyPair(256)
+        #test rsa dsks
+        rkp = RSAKeyPair(512)
         s = rkp.sign("allooooo") 
         assert rkp.verify("allooooo", s)
         assert not rkp.verify("helloooooo", s)
+        nkp = rkp.create_valid_keypair(mes, s)
+        assert nkp.verify(mes, s)
 
-#if __name__ == "__main__":
-    #test()
+if __name__ == "__main__":
+    test()
