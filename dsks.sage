@@ -197,7 +197,8 @@ class ECDSAKeyPair:
 
 
 def test():
-    for _ in range(100):
+    for i in range(100):
+        print("test %d of 100" % i)
         #test ecdsa dsks
         F = FiniteField(233970423115425145524320034830162017933)
         E = EllipticCurve(F, [-95051,11279326])
@@ -211,8 +212,9 @@ def test():
 
         #test rsa dsks
         rkp = RSAKeyPair(512)
-        s = rkp.sign("allooooo") 
-        assert rkp.verify("allooooo", s)
+        mes = "allooooo"
+        s = rkp.sign(mes)
+        assert rkp.verify(mes, s)
         assert not rkp.verify("helloooooo", s)
         nkp = rkp.create_valid_keypair(mes, s)
         assert nkp.verify(mes, s)
